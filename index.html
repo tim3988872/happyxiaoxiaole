@@ -1,0 +1,211 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>萌萌治愈消消乐 | Cozy Match-3</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <!-- 背景漂浮光斑与治愈粒子画布 -->
+  <canvas id="bg-canvas"></canvas>
+
+  <div class="game-wrapper">
+    <!-- 顶部标题与信息栏 -->
+    <header class="game-header">
+      <div class="title-container">
+        <h1 class="game-title">
+          <span class="sparkle-left">✨</span>
+          <span class="title-text">萌萌治愈消消乐</span>
+          <span class="sparkle-right">✨</span>
+        </h1>
+        <p class="game-subtitle">消除烦恼，收获温暖与治愈能量</p>
+      </div>
+
+      <!-- 控制工具栏 -->
+      <div class="controls-bar">
+        <div class="control-group">
+          <label for="grid-size-select" class="control-label">棋盘规模：</label>
+          <select id="grid-size-select" class="styled-select" title="选择棋盘尺寸">
+            <option value="16" selected>16 × 16 (超大巨幕·默认)</option>
+            <option value="12">12 × 12 (进阶挑战)</option>
+            <option value="10">10 × 10 (经典舒适)</option>
+            <option value="8">8 × 8 (轻松小巧·手机优选)</option>
+          </select>
+        </div>
+
+        <div class="button-group">
+          <button id="btn-sound" class="btn-icon" title="音效开关">
+            <span class="icon">🔊</span>
+          </button>
+          <button id="btn-hint" class="btn-pill" title="寻找一个可消除的移动">
+            <span>💡 提示</span>
+          </button>
+          <button id="btn-shuffle" class="btn-pill" title="打乱当前方块重新排列">
+            <span>🔀 洗牌</span>
+          </button>
+          <button id="btn-restart" class="btn-pill danger" title="重新开始本局">
+            <span>🔄 重来</span>
+          </button>
+          <button id="btn-rules" class="btn-icon" title="游戏玩法与规则">
+            <span class="icon">❓</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 核心仪表盘：得分、目标、步数 -->
+      <div class="dashboard-card">
+        <div class="dash-item score-item">
+          <span class="dash-label">🌟 当前得分</span>
+          <span class="dash-value" id="current-score">0</span>
+        </div>
+        <div class="dash-item target-item">
+          <span class="dash-label">🎯 目标分数</span>
+          <span class="dash-value" id="target-score">3000</span>
+        </div>
+        <div class="dash-item moves-item">
+          <span class="dash-label">👣 剩余步数</span>
+          <span class="dash-value highlight" id="moves-left">30</span>
+        </div>
+        <div class="dash-item best-item">
+          <span class="dash-label">🏆 历史最高</span>
+          <span class="dash-value" id="best-score">0</span>
+        </div>
+      </div>
+
+      <!-- 闯关进度条 -->
+      <div class="progress-container">
+        <div class="progress-bar-bg">
+          <div class="progress-bar-fill" id="progress-fill" style="width: 0%;">
+            <span class="progress-indicator">⭐</span>
+          </div>
+        </div>
+        <div class="progress-text-row">
+          <span id="progress-percent">0%</span>
+          <span id="progress-status">向着 3000 分冲刺~</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- 游戏主舞台与棋盘 -->
+    <main class="game-stage">
+      <div class="board-frame" id="board-frame">
+        <div class="grid-board" id="grid-board">
+          <!-- 动态方块由 JavaScript 渲染 -->
+        </div>
+        <!-- 连击提示浮层 -->
+        <div class="combo-banner" id="combo-banner"></div>
+        <!-- 洗牌/加载中遮罩 -->
+        <div class="board-overlay" id="board-overlay">
+          <div class="overlay-content">
+            <div class="overlay-spinner">🌸</div>
+            <p id="overlay-msg">魔法重新洗牌中...</p>
+          </div>
+        </div>
+      </div>
+    </main>
+
+    <!-- 底部状态与操作说明 -->
+    <footer class="game-footer">
+      <p class="footer-tip">💡 提示：点击选中相邻两个方块交换，或者直接手指/鼠标拖拽滑动即可消除！</p>
+    </footer>
+  </div>
+
+  <!-- 结算弹窗：胜利 -->
+  <div class="modal-overlay" id="modal-win">
+    <div class="modal-card win-card">
+      <div class="modal-badge">🎉 关卡大捷！</div>
+      <h2 class="modal-title">治愈力满格达成！</h2>
+      <p class="modal-desc">恭喜你达成了目标分数，收集了满满一罐治愈糖果！</p>
+      
+      <div class="modal-stats">
+        <div class="stat-box">
+          <span class="stat-name">最终得分</span>
+          <span class="stat-number" id="win-final-score">3280</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-name">剩余步数</span>
+          <span class="stat-number" id="win-remaining-moves">8</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-name">治愈评级</span>
+          <span class="stat-number star-rating" id="win-stars">⭐⭐⭐</span>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-modal primary" id="btn-win-replay">再玩一局</button>
+        <button class="btn-modal secondary" id="btn-share">复制战绩分享给好友</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 结算弹窗：失败 -->
+  <div class="modal-overlay" id="modal-lose">
+    <div class="modal-card lose-card">
+      <div class="modal-badge">☕ 步数用尽啦</div>
+      <h2 class="modal-title">差一点点就过关了~</h2>
+      <p class="modal-desc">别灰心，每一次消除都是一段轻松惬意的治愈时光！</p>
+      
+      <div class="modal-stats">
+        <div class="stat-box">
+          <span class="stat-name">最终得分</span>
+          <span class="stat-number" id="lose-final-score">2450</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-name">离目标还差</span>
+          <span class="stat-number danger-text" id="lose-gap-score">550</span>
+        </div>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-modal primary" id="btn-lose-replay">再来挑战一次</button>
+        <button class="btn-modal secondary" id="btn-lose-relax">换个小棋盘轻松一下</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 规则与帮助弹窗 -->
+  <div class="modal-overlay" id="modal-rules">
+    <div class="modal-card rules-card">
+      <div class="modal-badge">📖 游戏手册</div>
+      <h2 class="modal-title">如何游玩 & 定制你的游戏</h2>
+      <div class="rules-content">
+        <section class="rule-sec">
+          <h3>🎮 经典三消规则</h3>
+          <ul>
+            <li>点击或拖拽相邻的两个图案交换位置。</li>
+            <li>横向或纵向连接 <strong>3 个及以上</strong>相同图案即可消除。</li>
+            <li>如果交换后无法形成消除，方块会自动弹回，<strong>不会浪费步数</strong>。</li>
+            <li>单次消除 4 个或 5 个方块会获得超高额外加分！</li>
+            <li>连续引发连锁掉落消除会触发 <strong>治愈连击 (Combo)</strong>，得分翻倍！</li>
+          </ul>
+        </section>
+
+        <section class="rule-sec">
+          <h3>✨ 贴心机制</h3>
+          <ul>
+            <li><strong>无路可走自动洗牌：</strong>当盘面没有任何可消除机会时，会自动重新洗牌，绝不卡死。</li>
+            <li><strong>发呆智能提示：</strong>思考超过 6 秒无操作，可消除的方块会泛起温柔微光提示你。</li>
+            <li><strong>手机电脑自适应：</strong>不仅支持鼠标点击拖拽，在手机触屏上也能丝滑滑动。</li>
+          </ul>
+        </section>
+
+        <section class="rule-sec">
+          <h3>🎨 如何更换为你的专属图片？</h3>
+          <p>游戏方块图片保存在 <code>assets/images/</code> 目录下，分别是 <code>tile1.jpg</code> ~ <code>tile4.jpg</code>。只需将你喜欢的任意图片重命名替换即可！</p>
+        </section>
+      </div>
+
+      <div class="modal-actions">
+        <button class="btn-modal primary" id="btn-rules-close">我知道啦，开始游玩！</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 提示轻提示 Toast -->
+  <div class="toast-container" id="toast-container"></div>
+
+  <script src="./game.js"></script>
+</body>
+</html>
