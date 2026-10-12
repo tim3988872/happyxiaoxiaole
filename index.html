@@ -53,19 +53,19 @@
         </div>
       </div>
 
-      <!-- 核心仪表盘：得分、目标、步数 -->
+      <!-- 核心仪表盘：倒计时、累计得分、最大连击、历史最高 -->
       <div class="dashboard-card">
+        <div class="dash-item time-item">
+          <span class="dash-label">⏳ 倒计时</span>
+          <span class="dash-value highlight" id="time-left">15.0s</span>
+        </div>
         <div class="dash-item score-item">
-          <span class="dash-label">🌟 当前得分</span>
+          <span class="dash-label">🌟 累计得分</span>
           <span class="dash-value" id="current-score">0</span>
         </div>
-        <div class="dash-item target-item">
-          <span class="dash-label">🎯 目标分数</span>
-          <span class="dash-value" id="target-score">3000</span>
-        </div>
-        <div class="dash-item moves-item">
-          <span class="dash-label">👣 剩余步数</span>
-          <span class="dash-value highlight" id="moves-left">30</span>
+        <div class="dash-item combo-item">
+          <span class="dash-label">🔥 最大连击</span>
+          <span class="dash-value" id="max-combo">x1</span>
         </div>
         <div class="dash-item best-item">
           <span class="dash-label">🏆 历史最高</span>
@@ -73,16 +73,16 @@
         </div>
       </div>
 
-      <!-- 闯关进度条 -->
+      <!-- 生存时间能量槽 -->
       <div class="progress-container">
         <div class="progress-bar-bg">
-          <div class="progress-bar-fill" id="progress-fill" style="width: 0%;">
-            <span class="progress-indicator">⭐</span>
+          <div class="progress-bar-fill" id="progress-fill" style="width: 100%;">
+            <span class="progress-indicator">⚡</span>
           </div>
         </div>
         <div class="progress-text-row">
-          <span id="progress-percent">0%</span>
-          <span id="progress-status">向着 3000 分冲刺~</span>
+          <span id="progress-status">做出首次移动即可启动 15 秒倒计时</span>
+          <span id="progress-percent">15.0s</span>
         </div>
       </div>
     </header>
@@ -107,60 +107,43 @@
 
     <!-- 底部状态与操作说明 -->
     <footer class="game-footer">
-      <p class="footer-tip">💡 提示：点击选中相邻两个方块交换，或者直接手指/鼠标拖拽滑动即可消除！</p>
+      <p class="footer-tip">💡 规则：每次消除方块均可延长倒计时！制造特效和连击能大幅增加时间，坚持越久得分越高！</p>
     </footer>
   </div>
 
-  <!-- 结算弹窗：胜利 -->
-  <div class="modal-overlay" id="modal-win">
-    <div class="modal-card win-card">
-      <div class="modal-badge">🎉 关卡大捷！</div>
-      <h2 class="modal-title">治愈力满格达成！</h2>
-      <p class="modal-desc">恭喜你达成了目标分数，收集了满满一罐治愈糖果！</p>
+  <!-- 游戏结束结算弹窗 -->
+  <div class="modal-overlay" id="modal-gameover">
+    <div class="modal-card gameover-card">
+      <div class="modal-badge">⏰ 时间到！游戏结算</div>
+      <h2 class="modal-title" id="gameover-title">极速挑战达成！</h2>
+      <p class="modal-desc" id="gameover-desc">倒计时已归零，你在激烈的消除挑战中收获了满满的能量！</p>
       
       <div class="modal-stats">
         <div class="stat-box">
-          <span class="stat-name">最终得分</span>
-          <span class="stat-number" id="win-final-score">3280</span>
+          <span class="stat-name">最终累计得分</span>
+          <span class="stat-number highlight" id="gameover-final-score">0</span>
         </div>
         <div class="stat-box">
-          <span class="stat-name">剩余步数</span>
-          <span class="stat-number" id="win-remaining-moves">8</span>
+          <span class="stat-name">生存坚持时长</span>
+          <span class="stat-number" id="gameover-survive-time">0.0s</span>
         </div>
         <div class="stat-box">
-          <span class="stat-name">治愈评级</span>
-          <span class="stat-number star-rating" id="win-stars">⭐⭐⭐</span>
+          <span class="stat-name">最高连击纪录</span>
+          <span class="stat-number" id="gameover-max-combo">x1</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-name">累计消除方块</span>
+          <span class="stat-number" id="gameover-total-cleared">0个</span>
+        </div>
+        <div class="stat-box span-all">
+          <span class="stat-name">荣誉称号</span>
+          <span class="stat-number star-rating" id="gameover-rank">🌟 极速消除王者</span>
         </div>
       </div>
 
       <div class="modal-actions">
-        <button class="btn-modal primary" id="btn-win-replay">再玩一局</button>
+        <button class="btn-modal primary" id="btn-gameover-replay">再来一局挑战更高分</button>
         <button class="btn-modal secondary" id="btn-share">复制战绩分享给好友</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- 结算弹窗：失败 -->
-  <div class="modal-overlay" id="modal-lose">
-    <div class="modal-card lose-card">
-      <div class="modal-badge">☕ 步数用尽啦</div>
-      <h2 class="modal-title">差一点点就过关了~</h2>
-      <p class="modal-desc">别灰心，每一次消除都是一段轻松惬意的治愈时光！</p>
-      
-      <div class="modal-stats">
-        <div class="stat-box">
-          <span class="stat-name">最终得分</span>
-          <span class="stat-number" id="lose-final-score">2450</span>
-        </div>
-        <div class="stat-box">
-          <span class="stat-name">离目标还差</span>
-          <span class="stat-number danger-text" id="lose-gap-score">550</span>
-        </div>
-      </div>
-
-      <div class="modal-actions">
-        <button class="btn-modal primary" id="btn-lose-replay">再来挑战一次</button>
-        <button class="btn-modal secondary" id="btn-lose-relax">换个小棋盘轻松一下</button>
       </div>
     </div>
   </div>
@@ -177,8 +160,29 @@
             <li>点击或拖拽相邻的两个图案交换位置。</li>
             <li>横向或纵向连接 <strong>3 个及以上</strong>相同图案即可消除。</li>
             <li>如果交换后无法形成消除，方块会自动弹回，<strong>不会浪费步数</strong>。</li>
-            <li>单次消除 4 个或 5 个方块会获得超高额外加分！</li>
             <li>连续引发连锁掉落消除会触发 <strong>治愈连击 (Combo)</strong>，得分翻倍！</li>
+          </ul>
+        </section>
+
+        <section class="rule-sec">
+          <h3>💥 特效方块合成规则 (大面积消除)</h3>
+          <ul>
+            <li><strong>四连直线 (↔ / ↕)：</strong>4个相同图案排成一线生成直线消除方块，触发消除一整行或一整列！</li>
+            <li><strong>L型 / T型 (💣)：</strong>横竖相交匹配生成范围爆炸方块，触发引爆 3×3 范围！</li>
+            <li><strong>十字型 (✚)：</strong>十字中心相交生成十字消除方块，触发同时消除整行与整列！</li>
+            <li><strong>五连直线 (🌈)：</strong>5个及以上排成一线生成彩虹同色消除，消除全屏该颜色方块！</li>
+            <li><strong>生成位置：</strong>优先生成在玩家最后移动的方块位置，连锁产生则位于中心！</li>
+          </ul>
+        </section>
+
+        <section class="rule-sec">
+          <h3>🌟 特效方块直接互换 (超神组合)</h3>
+          <ul>
+            <li><strong>直线 + 直线：</strong>触发超级十字激光，清除整行 + 整列！</li>
+            <li><strong>炸弹 + 炸弹：</strong>触发 5×5 巨型核爆，扫平大片区域！</li>
+            <li><strong>直线 + 炸弹：</strong>3行 + 3列 激光超级大十字全屏扫射！</li>
+            <li><strong>同色 + 任意特效：</strong>全屏所有相同图案的方块全部变成该特效并全屏引爆！</li>
+            <li><strong>同色 + 同色：</strong>终极大招——全屏大清场，消除全场所有方块！</li>
           </ul>
         </section>
 

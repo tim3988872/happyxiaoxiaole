@@ -1,21 +1,28 @@
 /**
  * ============================================================================
- * 萌萌治愈消消乐 (Cozy Match-3 Game) - 核心逻辑与游戏引擎
+ * 萌萌治愈消消乐 (Cozy Match-3 Game) - 极限生存倒计时与累计计分引擎
  * ============================================================================
  * 
- * 🎮 自定义参数说明：
- * - 如需更换方块图片，请将图片放置于 assets/images/ 并在 CONFIG.tileImages 中配置相对路径；
- * - 如需修改初始步数、通关目标分数或网格大小，可直接修改 CONFIG 对象中的对应字段。
+ * 🎮 游戏模式规则：
+ * 1. 取消目标分数与步数限制：纯粹的极速生存挑战，无限累计最高得分！
+ * 2. 初始倒计时 15 秒：做出第一次移动后正式启动计时。
+ * 3. 消除方块加时机制：每次消除根据消去的方块数量延长倒计时，多消与连锁连击大幅回血！
+ * 4. 倒计时归零立即结束：倒计时到达 0 秒立即结算本局累计得分与生存时长。
+ * 5. 特效合成与大面积消除：四连出直线、五连出同色、L/T出范围、十字出十字、双特效互换出超神大招！
  */
 
 // ==========================================
 // 1. 游戏配置中心 (Game Configuration)
 // ==========================================
 const CONFIG = {
-  // 默认游戏参数
-  gridSize: 16,               // 棋盘大小：16 × 16 (支持切换为 8, 10, 12, 16)
-  initialMoves: 30,           // 初始步数：30 步
-  targetScore: 3000,          // 通关目标分数：3000 分
+  // 核心生存倒计时参数
+  initialTime: 15.0,          // 初始倒计时：15 秒
+  baseMatch3Time: 1.0,        // 普通 3 消基础加时：精确增加 1.0 秒
+  extraTileTime: 0.18,        // 超过 3 个方块，每个额外方块边际增加的时间 (秒)
+  comboTimeBonus: 0.2,        // 每次连击额外奖励的时间 (秒)
+  maxStepTimeBonus: 4.0,      // 单次单步消除严格封顶时间上限：最多不超过 4.0 秒
+  maxTime: 60.0,              // 倒计时能量槽上限 (秒，防止无限溢出)
+  gridSize: 16,               // 棋盘大小：16 × 16 (支持切换 8, 10, 12, 16)
   matchMin: 3,                // 消除最少连续数量：3 个及以上
 
   // 4 张方块图案素材 (使用相对路径，纯网页开箱即玩)
@@ -26,7 +33,7 @@ const CONFIG = {
     './assets/images/tile4.jpg'
   ],
 
-  // 计分规则
+  // 计分规则 (累计得分)
   scorePerTile: 10,           // 每个被消除方块的基础得分
   bonus4: 30,                 // 4连消额外奖励分
   bonus5: 80,                 // 5连消额外奖励分
@@ -36,12 +43,11 @@ const CONFIG = {
   swapDuration: 220,          // 交换动画时长
   matchDuration: 340,         // 消除爆破动画时长
   dropDuration: 260,          // 补位掉落动画时长
-  idleHintDelay: 6000         // 发呆多少毫秒后自动触发闪烁提示 (6秒)
+  idleHintDelay: 5000         // 发呆多少毫秒后自动触发闪烁提示 (5秒)
 };
 
 // ==========================================
 // 2. 音效合成器 (Web Audio API Synthesizer)
-// 免外部音频文件，零依赖，跨平台即开即响
 // ==========================================
 class SoundSynthesizer {
   constructor() {
@@ -144,7 +150,6 @@ class SoundSynthesizer {
     this.init();
     if (!this.ctx) return;
 
-    // 五声音阶基础频率表 (C5 ~ C6)
     const notes = [523.25, 587.33, 659.25, 783.99, 880.0, 1046.5, 1174.66, 1318.5];
     const baseFreq = notes[Math.min(combo - 1, notes.length - 1)];
 
@@ -164,6 +169,114 @@ class SoundSynthesizer {
 
       osc.start(now + idx * 0.04);
       osc.stop(now + 0.38 + idx * 0.04);
+    });
+  }
+
+  // 直线激光射击音效：高能电光呼啸
+  playLaser() {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+    const now = this.ctx.currentTime;
+
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(880, now);
+    osc.frequency.exponentialRampToValueAtTime(140, now + 0.25);
+
+    gain.gain.setValueAtTime(0.2, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.28);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.28);
+  }
+
+  // 炸弹爆炸音效：沉闷震撼低频冲击波
+  playExplosion() {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const gain = this.ctx.createGain();
+
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(180, now);
+    osc.frequency.exponentialRampToValueAtTime(40, now + 0.35);
+
+    gain.gain.setValueAtTime(0.28, now);
+    gain.gain.exponentialRampToValueAtTime(0.001, now + 0.38);
+
+    osc.connect(gain);
+    gain.connect(this.ctx.destination);
+
+    osc.start(now);
+    osc.stop(now + 0.38);
+  }
+
+  // 彩虹同色消除音效：神秘闪耀宇宙星芒
+  playColorBomb() {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const notes = [659.25, 783.99, 987.77, 1318.5, 1567.98, 1975.5];
+    notes.forEach((freq, idx) => {
+      const osc = this.ctx.createOscillator();
+      const gain = this.ctx.createGain();
+      const time = now + idx * 0.05;
+
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, time);
+
+      gain.gain.setValueAtTime(0.15, time);
+      gain.gain.exponentialRampToValueAtTime(0.001, time + 0.4);
+
+      osc.connect(gain);
+      gain.connect(this.ctx.destination);
+
+      osc.start(time);
+      osc.stop(time + 0.42);
+    });
+  }
+
+  // 特效组合超级大招音效：壮阔和弦洪流
+  playSuperCombo() {
+    if (!this.enabled) return;
+    this.init();
+    if (!this.ctx) return;
+
+    const now = this.ctx.currentTime;
+    const chords = [
+      [523.25, 659.25, 783.99, 1046.5],
+      [659.25, 830.61, 987.77, 1318.5],
+      [783.99, 987.77, 1174.66, 1567.98]
+    ];
+    chords.forEach((chord, i) => {
+      const time = now + i * 0.12;
+      chord.forEach(freq => {
+        const osc = this.ctx.createOscillator();
+        const gain = this.ctx.createGain();
+
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(freq, time);
+
+        gain.gain.setValueAtTime(0.14, time);
+        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.5);
+
+        osc.connect(gain);
+        gain.connect(this.ctx.destination);
+
+        osc.start(time);
+        osc.stop(time + 0.52);
+      });
     });
   }
 
@@ -195,59 +308,24 @@ class SoundSynthesizer {
     });
   }
 
-  // 胜利祝贺和弦
-  playVictory() {
-    if (!this.enabled) return;
-    this.init();
-    if (!this.ctx) return;
-
-    const chords = [
-      [523.25, 659.25, 783.99],
-      [587.33, 739.99, 880.00],
-      [659.25, 830.61, 987.77],
-      [1046.5, 1318.5, 1567.98]
-    ];
-    const now = this.ctx.currentTime;
-
-    chords.forEach((chord, i) => {
-      const time = now + i * 0.18;
-      chord.forEach(freq => {
-        const osc = this.ctx.createOscillator();
-        const gain = this.ctx.createGain();
-
-        osc.type = 'triangle';
-        osc.frequency.setValueAtTime(freq, time);
-
-        gain.gain.setValueAtTime(0.12, time);
-        gain.gain.exponentialRampToValueAtTime(0.001, time + 0.6);
-
-        osc.connect(gain);
-        gain.connect(this.ctx.destination);
-
-        osc.start(time);
-        osc.stop(time + 0.65);
-      });
-    });
-  }
-
-  // 失败柔和音
+  // 游戏结束提示音
   playGameOver() {
     if (!this.enabled) return;
     this.init();
     if (!this.ctx) return;
 
-    const notes = [440, 392, 349, 329];
+    const notes = [440, 392, 349, 329, 261.6];
     const now = this.ctx.currentTime;
 
     notes.forEach((freq, idx) => {
       const osc = this.ctx.createOscillator();
       const gain = this.ctx.createGain();
-      const time = now + idx * 0.22;
+      const time = now + idx * 0.18;
 
       osc.type = 'sine';
       osc.frequency.setValueAtTime(freq, time);
 
-      gain.gain.setValueAtTime(0.12, time);
+      gain.gain.setValueAtTime(0.15, time);
       gain.gain.exponentialRampToValueAtTime(0.001, time + 0.45);
 
       osc.connect(gain);
@@ -293,18 +371,16 @@ class ParticleSystem {
         color: colors[Math.floor(Math.random() * colors.length)],
         speedX: (Math.random() - 0.5) * 0.6,
         speedY: -Math.random() * 0.6 - 0.2,
-        alpha: Math.random() * 0.45 + 0.15,
-        type: Math.random() > 0.5 ? 'circle' : 'star'
+        alpha: Math.random() * 0.45 + 0.15
       });
     }
   }
 
-  // 消除时产生绚丽治愈光斑
   spawnBurst(x, y, count = 12) {
-    const colors = ['#FFD54F', '#FF8A65', '#FF4081', '#00E676', '#40C4FF'];
+    const colors = ['#FFD54F', '#FF8A65', '#FF4081', '#00E676', '#40C4FF', '#E040FB'];
     for (let i = 0; i < count; i++) {
       const angle = Math.random() * Math.PI * 2;
-      const speed = Math.random() * 4 + 1.5;
+      const speed = Math.random() * 4.5 + 1.5;
       this.burstParticles.push({
         x: x,
         y: y,
@@ -321,7 +397,6 @@ class ParticleSystem {
   animate() {
     this.ctx.clearRect(0, 0, this.canvas.width, this.canvas.height);
 
-    // 绘制环境漂浮粒子
     for (let p of this.ambientParticles) {
       p.x += p.speedX;
       p.y += p.speedY;
@@ -341,12 +416,11 @@ class ParticleSystem {
       this.ctx.restore();
     }
 
-    // 绘制消除爆破粒子
     for (let i = this.burstParticles.length - 1; i >= 0; i--) {
       const b = this.burstParticles[i];
       b.x += b.vx;
       b.y += b.vy;
-      b.vy += 0.1; // 重力加速度
+      b.vy += 0.1;
       b.life -= b.decay;
 
       if (b.life <= 0) {
@@ -372,33 +446,39 @@ class ParticleSystem {
 // ==========================================
 class Match3Game {
   constructor() {
-    // 基础状态
     this.gridSize = CONFIG.gridSize;
-    this.movesLeft = CONFIG.initialMoves;
-    this.targetScore = CONFIG.targetScore;
     this.currentScore = 0;
     this.bestScore = parseInt(localStorage.getItem('match3_best_score') || '0', 10);
-    this.board = []; // 2D 数组 [row][col]
-    this.selected = null; // 当前选中的方块 { row, col }
-    this.isLocked = false; // 是否正在动画执行中（锁定用户操作）
-    this.combo = 0; // 当前连锁消除次数
-    this.idleTimer = null; // 发呆提示计时器
-    this.hintTiles = []; // 当前提示高亮的两个方块
+    this.board = [];
 
-    // 拖拽手势状态
+    // 生存倒计时状态
+    this.timeLeft = CONFIG.initialTime;
+    this.totalSurvivedTime = 0.0;
+    this.timerRunning = false;
+    this.timerInterval = null;
+    this.isGameOver = false;
+
+    // 统计数据
+    this.maxCombo = 1;
+    this.totalClearedTiles = 0;
+
+    this.selected = null;
+    this.isLocked = false;
+    this.combo = 0;
+    this.idleTimer = null;
+    this.hintTiles = [];
+
     this.pointerStart = null;
 
-    // 音效与粒子
     this.sound = new SoundSynthesizer();
     this.particles = new ParticleSystem(document.getElementById('bg-canvas'));
 
-    // DOM 元素引用
     this.dom = {
       board: document.getElementById('grid-board'),
       boardFrame: document.getElementById('board-frame'),
+      timeLeft: document.getElementById('time-left'),
       currentScore: document.getElementById('current-score'),
-      targetScore: document.getElementById('target-score'),
-      movesLeft: document.getElementById('moves-left'),
+      maxCombo: document.getElementById('max-combo'),
       bestScore: document.getElementById('best-score'),
       progressFill: document.getElementById('progress-fill'),
       progressPercent: document.getElementById('progress-percent'),
@@ -413,22 +493,20 @@ class Match3Game {
       btnShuffle: document.getElementById('btn-shuffle'),
       btnRestart: document.getElementById('btn-restart'),
       btnRules: document.getElementById('btn-rules'),
-      modalWin: document.getElementById('modal-win'),
-      modalLose: document.getElementById('modal-lose'),
+      modalGameOver: document.getElementById('modal-gameover'),
       modalRules: document.getElementById('modal-rules'),
-      winFinalScore: document.getElementById('win-final-score'),
-      winRemainingMoves: document.getElementById('win-remaining-moves'),
-      winStars: document.getElementById('win-stars'),
-      loseFinalScore: document.getElementById('lose-final-score'),
-      loseGapScore: document.getElementById('lose-gap-score'),
-      btnWinReplay: document.getElementById('btn-win-replay'),
+      gameoverTitle: document.getElementById('gameover-title'),
+      gameoverDesc: document.getElementById('gameover-desc'),
+      gameoverFinalScore: document.getElementById('gameover-final-score'),
+      gameoverSurviveTime: document.getElementById('gameover-survive-time'),
+      gameoverMaxCombo: document.getElementById('gameover-max-combo'),
+      gameoverTotalCleared: document.getElementById('gameover-total-cleared'),
+      gameoverRank: document.getElementById('gameover-rank'),
+      btnGameoverReplay: document.getElementById('btn-gameover-replay'),
       btnShare: document.getElementById('btn-share'),
-      btnLoseReplay: document.getElementById('btn-lose-replay'),
-      btnLoseRelax: document.getElementById('btn-lose-relax'),
       btnRulesClose: document.getElementById('btn-rules-close')
     };
 
-    // 预加载方块素材，消除首次渲染延迟
     CONFIG.tileImages.forEach(src => {
       const img = new Image();
       img.src = src;
@@ -442,14 +520,12 @@ class Match3Game {
   // 事件监听绑定
   // ----------------------------------------
   bindEvents() {
-    // 切换棋盘规格
     this.dom.gridSelect.addEventListener('change', (e) => {
       this.gridSize = parseInt(e.target.value, 10);
       this.startNewGame();
       this.showToast(`已切换为 ${this.gridSize} × ${this.gridSize} 棋盘规格`);
     });
 
-    // 顶部按钮操作
     this.dom.btnSound.addEventListener('click', () => {
       const on = this.sound.toggle();
       this.dom.btnSound.querySelector('.icon').textContent = on ? '🔊' : '🔇';
@@ -459,7 +535,7 @@ class Match3Game {
     this.dom.btnHint.addEventListener('click', () => this.showManualHint());
     this.dom.btnShuffle.addEventListener('click', () => this.shuffleBoardWithAnimation(true));
     this.dom.btnRestart.addEventListener('click', () => {
-      if (confirm('确定要重新开始当前关卡吗？')) {
+      if (confirm('确定要重新开始当前挑战吗？')) {
         this.startNewGame();
       }
     });
@@ -467,14 +543,13 @@ class Match3Game {
     this.dom.btnRules.addEventListener('click', () => this.openModal(this.dom.modalRules));
     this.dom.btnRulesClose.addEventListener('click', () => this.closeModal(this.dom.modalRules));
 
-    // 胜利弹窗按钮
-    this.dom.btnWinReplay.addEventListener('click', () => {
-      this.closeModal(this.dom.modalWin);
+    this.dom.btnGameoverReplay.addEventListener('click', () => {
+      this.closeModal(this.dom.modalGameOver);
       this.startNewGame();
     });
 
     this.dom.btnShare.addEventListener('click', () => {
-      const shareText = `我在【萌萌治愈消消乐】中获得了 ${this.currentScore} 分！剩余步数 ${this.movesLeft} 步！快来一起治愈放松吧~ 💖`;
+      const shareText = `我在【开心消消乐】极限倒计时模式中坚持了 ${this.totalSurvivedTime.toFixed(1)} 秒，斩获累计得分 ${this.currentScore} 分！最高连击 x${this.maxCombo}！快来挑战我的纪录吧~ ⏰✨`;
       if (navigator.clipboard && navigator.clipboard.writeText) {
         navigator.clipboard.writeText(shareText).then(() => {
           this.showToast('✨ 战绩已复制到剪贴板，快发给好友吧！');
@@ -486,26 +561,10 @@ class Match3Game {
       }
     });
 
-    // 失败弹窗按钮
-    this.dom.btnLoseReplay.addEventListener('click', () => {
-      this.closeModal(this.dom.modalLose);
-      this.startNewGame();
-    });
-
-    this.dom.btnLoseRelax.addEventListener('click', () => {
-      this.closeModal(this.dom.modalLose);
-      this.gridSize = 8;
-      this.dom.gridSelect.value = '8';
-      this.startNewGame();
-      this.showToast('已切换至 8×8 轻松模式，继续治愈吧~');
-    });
-
-    // 弹窗背景点击关闭 (仅规则弹窗)
     this.dom.modalRules.addEventListener('click', (e) => {
       if (e.target === this.dom.modalRules) this.closeModal(this.dom.modalRules);
     });
 
-    // 棋盘指针与滑动交互 (同时支持点击与拖拽手势)
     this.dom.board.addEventListener('pointerdown', (e) => this.handlePointerDown(e));
     window.addEventListener('pointermove', (e) => this.handlePointerMove(e));
     window.addEventListener('pointerup', (e) => this.handlePointerUp(e));
@@ -516,46 +575,127 @@ class Match3Game {
   // 开始新游戏
   // ----------------------------------------
   startNewGame() {
+    this.stopTimer();
     this.clearIdleTimer();
     this.clearHints();
+
     this.selected = null;
     this.isLocked = false;
+    this.isGameOver = false;
     this.combo = 0;
-    this.movesLeft = CONFIG.initialMoves;
+    this.maxCombo = 1;
+    this.totalClearedTiles = 0;
     this.currentScore = 0;
+    this.timeLeft = CONFIG.initialTime;
+    this.totalSurvivedTime = 0.0;
+    this.timerRunning = false;
 
-    // 更新界面配置
     document.documentElement.style.setProperty('--grid-size', this.gridSize);
     this.dom.board.style.gridTemplateColumns = `repeat(${this.gridSize}, 1fr)`;
 
     this.updateDashboard();
+    this.updateTimerDisplay();
+    this.dom.progressStatus.textContent = '做出首次移动即可启动 15 秒倒计时';
+
     this.generateValidBoard();
     this.renderBoard();
     this.resetIdleTimer();
   }
 
   // ----------------------------------------
-  // 仪表盘与进度条更新
+  // 倒计时计时器系统 (Time-Attack Engine)
+  // ----------------------------------------
+  startTimer() {
+    if (this.timerRunning || this.isGameOver) return;
+    this.timerRunning = true;
+    this.dom.progressStatus.textContent = '⚡ 极限生存挑战中！消除方块加时！';
+
+    let lastTimestamp = performance.now();
+    this.timerInterval = setInterval(() => {
+      if (!this.timerRunning || this.isGameOver) return;
+
+      const now = performance.now();
+      const dt = (now - lastTimestamp) / 1000;
+      lastTimestamp = now;
+
+      this.timeLeft = Math.max(0, this.timeLeft - dt);
+      this.totalSurvivedTime += dt;
+      this.updateTimerDisplay();
+
+      // 倒计时结束，游戏立即结束！
+      if (this.timeLeft <= 0) {
+        this.handleGameOver();
+      }
+    }, 50);
+  }
+
+  stopTimer() {
+    if (this.timerInterval) {
+      clearInterval(this.timerInterval);
+      this.timerInterval = null;
+    }
+    this.timerRunning = false;
+  }
+
+  // 根据消除方块增加倒计时时间
+  addTime(seconds) {
+    if (this.isGameOver) return;
+
+    const actualAdded = Math.min(seconds, CONFIG.maxTime - this.timeLeft);
+    this.timeLeft = Math.min(CONFIG.maxTime, this.timeLeft + seconds);
+    this.updateTimerDisplay();
+
+    // 时间跳动绿字动画
+    this.dom.timeLeft.classList.remove('time-add');
+    void this.dom.timeLeft.offsetWidth;
+    this.dom.timeLeft.classList.add('time-add');
+    setTimeout(() => this.dom.timeLeft.classList.remove('time-add'), 300);
+
+    // 弹出悬浮加时气泡标签
+    this.spawnTimePopup(`+${seconds.toFixed(1)}s ⏳`);
+  }
+
+  updateTimerDisplay() {
+    this.dom.timeLeft.textContent = `${this.timeLeft.toFixed(1)}s`;
+    this.dom.progressPercent.textContent = `${this.timeLeft.toFixed(1)}s`;
+
+    // 计算能量槽比例 (以初始 15 秒为基准满格，最多展示到上限)
+    const pct = Math.min(100, Math.max(0, (this.timeLeft / CONFIG.initialTime) * 100));
+    this.dom.progressFill.style.width = `${pct}%`;
+
+    // 紧急警示红光动效 (时间小于等于 5 秒)
+    if (this.timeLeft <= 5.0 && this.timeLeft > 0) {
+      this.dom.timeLeft.classList.add('urgent');
+      this.dom.progressFill.classList.add('urgent');
+    } else {
+      this.dom.timeLeft.classList.remove('urgent');
+      this.dom.progressFill.classList.remove('urgent');
+    }
+  }
+
+  spawnTimePopup(text) {
+    const popup = document.createElement('div');
+    popup.className = 'time-popup';
+    popup.textContent = text;
+
+    const rect = this.dom.timeLeft.getBoundingClientRect();
+    const frameRect = this.dom.boardFrame.getBoundingClientRect();
+
+    popup.style.left = `${rect.left - frameRect.left + rect.width / 4}px`;
+    popup.style.top = `${rect.top - frameRect.top - 20}px`;
+
+    this.dom.boardFrame.appendChild(popup);
+    setTimeout(() => popup.remove(), 850);
+  }
+
+  // ----------------------------------------
+  // 仪表盘与累计计分更新
   // ----------------------------------------
   updateDashboard() {
     this.dom.currentScore.textContent = this.currentScore;
-    this.dom.targetScore.textContent = this.targetScore;
-    this.dom.movesLeft.textContent = this.movesLeft;
+    this.dom.maxCombo.textContent = `x${this.maxCombo}`;
     this.dom.bestScore.textContent = this.bestScore;
 
-    // 计算达成进度
-    const pct = Math.min(100, Math.round((this.currentScore / this.targetScore) * 100));
-    this.dom.progressFill.style.width = `${pct}%`;
-    this.dom.progressPercent.textContent = `${pct}%`;
-
-    if (this.currentScore >= this.targetScore) {
-      this.dom.progressStatus.textContent = '🎉 目标达成！治愈满分！';
-    } else {
-      const remaining = this.targetScore - this.currentScore;
-      this.dom.progressStatus.textContent = `距离目标还差 ${remaining} 分`;
-    }
-
-    // 历史最高分记录
     if (this.currentScore > this.bestScore) {
       this.bestScore = this.currentScore;
       localStorage.setItem('match3_best_score', this.bestScore);
@@ -564,7 +704,7 @@ class Match3Game {
   }
 
   // ----------------------------------------
-  // 生成无初始可消除且有解的初始棋盘
+  // 生成初始无三消且有解的棋盘
   // ----------------------------------------
   generateValidBoard() {
     let attempts = 0;
@@ -585,7 +725,8 @@ class Match3Game {
           const type = allowed[Math.floor(Math.random() * allowed.length)];
           this.board[r][c] = {
             id: `${r}-${c}-${Date.now()}-${Math.random()}`,
-            type: type
+            type: type,
+            special: null
           };
         }
       }
@@ -614,8 +755,9 @@ class Match3Game {
         img.alt = `Tile ${item.type + 1}`;
         img.loading = 'eager';
         img.draggable = false;
-
         tileEl.appendChild(img);
+
+        this.applyTileVisuals(tileEl, item);
         fragment.appendChild(tileEl);
       }
     }
@@ -623,21 +765,79 @@ class Match3Game {
     this.dom.board.appendChild(fragment);
   }
 
+  applyTileVisuals(tileEl, item) {
+    if (!tileEl || !item) return;
+
+    tileEl.classList.remove('special-line-h', 'special-line-v', 'special-bomb', 'special-cross', 'special-color');
+    const existingBadge = tileEl.querySelector('.special-badge');
+    if (existingBadge) existingBadge.remove();
+
+    const img = tileEl.querySelector('img');
+    if (img) img.src = CONFIG.tileImages[item.type];
+
+    if (item.special) {
+      tileEl.classList.add(`special-${item.special}`);
+      const badge = document.createElement('div');
+      badge.className = `special-badge ${item.special}-badge`;
+      badge.textContent = {
+        'line-h': '↔',
+        'line-v': '↕',
+        'bomb': '💣',
+        'cross': '✚',
+        'color': '🌈'
+      }[item.special] || '';
+      tileEl.appendChild(badge);
+    }
+  }
+
+  updateTileElement(r, c) {
+    const el = document.getElementById(`tile-${r}-${c}`);
+    const item = this.board[r][c];
+    if (el && item) {
+      this.applyTileVisuals(el, item);
+    }
+  }
+
   // ----------------------------------------
-  // 寻找盘面任意一个可消除的合法移动 (用于死锁检测和提示)
+  // 寻找盘面任意一个可消除的合法移动 (死锁检测与提示)
   // ----------------------------------------
   findPossibleMove() {
     const N = this.gridSize;
-    // 遍历所有相邻方块模拟交换
+
+    // 1. 同色魔力鸟与任意相邻方块交换
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
-        // 尝试向右交换
+        if (this.board[r][c] && this.board[r][c].special === 'color') {
+          if (c + 1 < N) return [{ r, c }, { r, c: c + 1 }];
+          if (r + 1 < N) return [{ r, c }, { r: r + 1, c }];
+          if (c - 1 >= 0) return [{ r, c }, { r, c: c - 1 }];
+          if (r - 1 >= 0) return [{ r, c }, { r: r - 1, c }];
+        }
+      }
+    }
+
+    // 2. 两个相邻特殊方块
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
+        if (this.board[r][c] && this.board[r][c].special) {
+          if (c + 1 < N && this.board[r][c + 1] && this.board[r][c + 1].special) {
+            return [{ r, c }, { r, c: c + 1 }];
+          }
+          if (r + 1 < N && this.board[r + 1][c] && this.board[r + 1][c].special) {
+            return [{ r, c }, { r: r + 1, c }];
+          }
+        }
+      }
+    }
+
+    // 3. 常规三消匹配检测
+    for (let r = 0; r < N; r++) {
+      for (let c = 0; c < N; c++) {
         if (c + 1 < N) {
           if (this.testSwapHasMatch(r, c, r, c + 1)) {
             return [{ r, c }, { r, c: c + 1 }];
           }
         }
-        // 尝试向下交换
         if (r + 1 < N) {
           if (this.testSwapHasMatch(r, c, r + 1, c)) {
             return [{ r, c }, { r: r + 1, c }];
@@ -648,36 +848,34 @@ class Match3Game {
     return null;
   }
 
-  // 模拟交换并测试是否产生三消
   testSwapHasMatch(r1, c1, r2, c2) {
     if (!this.board[r1] || !this.board[r2]) return false;
-    // 临时交换
     const item1 = this.board[r1][c1];
     const item2 = this.board[r2][c2];
     this.board[r1][c1] = item2;
     this.board[r2][c2] = item1;
 
-    const matches = this.findAllMatches();
+    const analysis = this.analyzeMatches();
 
-    // 恢复原状
     this.board[r1][c1] = item1;
     this.board[r2][c2] = item2;
 
-    return matches.length > 0;
+    return analysis.hasMatches;
   }
 
   // ----------------------------------------
-  // 查找棋盘上所有横向与纵向连续 3+ 的方块
+  // 核心匹配算法与特效形状识别引擎 (Shape Recognition)
   // ----------------------------------------
-  findAllMatches() {
+  analyzeMatches(playerMove = null) {
     const N = this.gridSize;
-    const matchMap = new Map(); // key: "r,c" -> { row, col }
+    const hRuns = [];
+    const vRuns = [];
 
     // 1. 横向扫描连续
     for (let r = 0; r < N; r++) {
       let startCol = 0;
       let matchLen = 1;
-      let currType = this.board[r][0] ? this.board[r][0].type : -1;
+      let currType = (this.board[r] && this.board[r][0]) ? this.board[r][0].type : -1;
 
       for (let c = 1; c <= N; c++) {
         const itemType = (c < N && this.board[r][c]) ? this.board[r][c].type : -1;
@@ -685,9 +883,18 @@ class Match3Game {
           matchLen++;
         } else {
           if (matchLen >= CONFIG.matchMin && currType !== -1) {
+            const cells = [];
             for (let k = startCol; k < startCol + matchLen; k++) {
-              matchMap.set(`${r},${k}`, { row: r, col: k });
+              cells.push({ row: r, col: k });
             }
+            hRuns.push({
+              row: r,
+              colStart: startCol,
+              colEnd: startCol + matchLen - 1,
+              length: matchLen,
+              type: currType,
+              cells: cells
+            });
           }
           startCol = c;
           currType = itemType;
@@ -700,7 +907,7 @@ class Match3Game {
     for (let c = 0; c < N; c++) {
       let startRow = 0;
       let matchLen = 1;
-      let currType = this.board[0][c] ? this.board[0][c].type : -1;
+      let currType = (this.board[0] && this.board[0][c]) ? this.board[0][c].type : -1;
 
       for (let r = 1; r <= N; r++) {
         const itemType = (r < N && this.board[r][c]) ? this.board[r][c].type : -1;
@@ -708,9 +915,18 @@ class Match3Game {
           matchLen++;
         } else {
           if (matchLen >= CONFIG.matchMin && currType !== -1) {
+            const cells = [];
             for (let k = startRow; k < startRow + matchLen; k++) {
-              matchMap.set(`${k},${c}`, { row: k, col: c });
+              cells.push({ row: k, col: c });
             }
+            vRuns.push({
+              col: c,
+              rowStart: startRow,
+              rowEnd: startRow + matchLen - 1,
+              length: matchLen,
+              type: currType,
+              cells: cells
+            });
           }
           startRow = r;
           currType = itemType;
@@ -719,7 +935,305 @@ class Match3Game {
       }
     }
 
-    return Array.from(matchMap.values());
+    if (hRuns.length === 0 && vRuns.length === 0) {
+      return { hasMatches: false, eliminatedCells: [], specialsToCreate: [] };
+    }
+
+    const allRuns = [
+      ...hRuns.map((hr, idx) => ({ ...hr, runType: 'h', runIndex: idx })),
+      ...vRuns.map((vr, idx) => ({ ...vr, runType: 'v', runIndex: idx }))
+    ];
+
+    const parent = allRuns.map((_, i) => i);
+    function find(i) {
+      if (parent[i] === i) return i;
+      return parent[i] = find(parent[i]);
+    }
+    function union(i, j) {
+      const rootI = find(i);
+      const rootJ = find(j);
+      if (rootI !== rootJ) parent[rootI] = rootJ;
+    }
+
+    const intersections = [];
+    for (let i = 0; i < hRuns.length; i++) {
+      for (let j = 0; j < vRuns.length; j++) {
+        const hr = hRuns[i];
+        const vr = vRuns[j];
+        if (hr.type === vr.type) {
+          if (hr.row >= vr.rowStart && hr.row <= vr.rowEnd &&
+              vr.col >= hr.colStart && vr.col <= hr.colEnd) {
+            const vIdx = hRuns.length + j;
+            union(i, vIdx);
+
+            const ir = hr.row;
+            const ic = vr.col;
+            const isCross = (ic > hr.colStart && ic < hr.colEnd && ir > vr.rowStart && ir < vr.rowEnd);
+            intersections.push({
+              runA: i,
+              runB: vIdx,
+              row: ir,
+              col: ic,
+              isCross: isCross
+            });
+          }
+        }
+      }
+    }
+
+    const groups = new Map();
+    for (let i = 0; i < allRuns.length; i++) {
+      const root = find(i);
+      if (!groups.has(root)) groups.set(root, []);
+      groups.get(root).push(allRuns[i]);
+    }
+
+    const specialsToCreate = [];
+    const allEliminatedCells = new Set();
+
+    for (const [root, clusterRuns] of groups.entries()) {
+      const clusterCellsMap = new Map();
+      clusterRuns.forEach(r => {
+        r.cells.forEach(c => clusterCellsMap.set(`${c.row},${c.col}`, c));
+      });
+
+      const clusterCells = Array.from(clusterCellsMap.values());
+      const gemType = clusterRuns[0].type;
+
+      const clusterIntersections = intersections.filter(item => 
+        find(item.runA) === root || find(item.runB) === root
+      );
+
+      let specialType = null;
+      let defaultPos = null;
+
+      if (clusterIntersections.length > 0) {
+        const crossInt = clusterIntersections.find(it => it.isCross);
+        if (crossInt) {
+          specialType = 'cross';
+          defaultPos = { row: crossInt.row, col: crossInt.col };
+        } else {
+          specialType = 'bomb';
+          defaultPos = { row: clusterIntersections[0].row, col: clusterIntersections[0].col };
+        }
+      } else {
+        let maxLen = 0;
+        let longestRun = clusterRuns[0];
+        clusterRuns.forEach(r => {
+          if (r.length > maxLen) {
+            maxLen = r.length;
+            longestRun = r;
+          }
+        });
+
+        if (maxLen >= 5) {
+          specialType = 'color';
+          defaultPos = longestRun.cells[Math.floor(longestRun.cells.length / 2)];
+        } else if (maxLen === 4) {
+          specialType = (longestRun.runType === 'h') ? 'line-h' : 'line-v';
+          defaultPos = longestRun.cells[Math.floor(longestRun.cells.length / 2)];
+        }
+      }
+
+      let createPos = null;
+      if (specialType) {
+        if (playerMove) {
+          const isTargetInCluster = clusterCells.some(c => c.row === playerMove.target.row && c.col === playerMove.target.col);
+          const isSourceInCluster = clusterCells.some(c => c.row === playerMove.source.row && c.col === playerMove.source.col);
+
+          if (isTargetInCluster) {
+            createPos = { row: playerMove.target.row, col: playerMove.target.col };
+          } else if (isSourceInCluster) {
+            createPos = { row: playerMove.source.row, col: playerMove.source.col };
+          } else {
+            createPos = defaultPos || clusterCells[Math.floor(clusterCells.length / 2)];
+          }
+        } else {
+          createPos = defaultPos || clusterCells[Math.floor(clusterCells.length / 2)];
+        }
+
+        specialsToCreate.push({
+          type: specialType,
+          pos: createPos,
+          gemType: gemType
+        });
+      }
+
+      for (const cell of clusterCells) {
+        if (createPos && cell.row === createPos.row && cell.col === createPos.col) {
+          continue;
+        }
+        allEliminatedCells.add(`${cell.row},${cell.col}`);
+      }
+    }
+
+    return {
+      hasMatches: true,
+      eliminatedCells: Array.from(allEliminatedCells).map(k => {
+        const [r, c] = k.split(',').map(Number);
+        return { row: r, col: c };
+      }),
+      specialsToCreate: specialsToCreate
+    };
+  }
+
+  // ----------------------------------------
+  // 特效引爆与连锁波及计算 (Chain Detonations)
+  // ----------------------------------------
+  expandSpecialDetonations(initialEliminatedCells, initialSpecialTriggers = []) {
+    const N = this.gridSize;
+    const eliminatedMap = new Map();
+    const triggeredSpecials = new Set();
+    const queue = [];
+
+    for (const cell of initialEliminatedCells) {
+      eliminatedMap.set(`${cell.row},${cell.col}`, cell);
+      const tile = this.board[cell.row][cell.col];
+      if (tile && tile.special) {
+        queue.push({
+          row: cell.row,
+          col: cell.col,
+          special: tile.special,
+          type: tile.type
+        });
+        triggeredSpecials.add(`${cell.row},${cell.col}`);
+      }
+    }
+
+    for (const trig of initialSpecialTriggers) {
+      eliminatedMap.set(`${trig.row},${trig.col}`, { row: trig.row, col: trig.col });
+      if (!triggeredSpecials.has(`${trig.row},${trig.col}`)) {
+        queue.push(trig);
+        triggeredSpecials.add(`${trig.row},${trig.col}`);
+      }
+    }
+
+    while (queue.length > 0) {
+      const sp = queue.shift();
+      const affected = [];
+
+      if (sp.special === 'line-h') {
+        this.showLaserH(sp.row);
+        this.sound.playLaser();
+        for (let c = 0; c < N; c++) affected.push({ row: sp.row, col: c });
+      } else if (sp.special === 'line-v') {
+        this.showLaserV(sp.col);
+        this.sound.playLaser();
+        for (let r = 0; r < N; r++) affected.push({ row: r, col: sp.col });
+      } else if (sp.special === 'bomb') {
+        this.showBombRipple(sp.row, sp.col, 1);
+        this.sound.playExplosion();
+        this.shakeBoard();
+        for (let r = Math.max(0, sp.row - 1); r <= Math.min(N - 1, sp.row + 1); r++) {
+          for (let c = Math.max(0, sp.col - 1); c <= Math.min(N - 1, sp.col + 1); c++) {
+            affected.push({ row: r, col: c });
+          }
+        }
+      } else if (sp.special === 'cross') {
+        this.showLaserH(sp.row);
+        this.showLaserV(sp.col);
+        this.sound.playLaser();
+        this.shakeBoard();
+        for (let c = 0; c < N; c++) affected.push({ row: sp.row, col: c });
+        for (let r = 0; r < N; r++) affected.push({ row: r, col: sp.col });
+      } else if (sp.special === 'color') {
+        this.showScreenFlash();
+        this.sound.playColorBomb();
+        const targetType = sp.type >= 0 ? sp.type : Math.floor(Math.random() * 4);
+        for (let r = 0; r < N; r++) {
+          for (let c = 0; c < N; c++) {
+            if (this.board[r][c] && this.board[r][c].type === targetType) {
+              affected.push({ row: r, col: c });
+            }
+          }
+        }
+      }
+
+      for (const aff of affected) {
+        const key = `${aff.row},${aff.col}`;
+        if (!eliminatedMap.has(key)) {
+          eliminatedMap.set(key, aff);
+        }
+        if (!triggeredSpecials.has(key)) {
+          const affTile = this.board[aff.row][aff.col];
+          if (affTile && affTile.special) {
+            triggeredSpecials.add(key);
+            queue.push({
+              row: aff.row,
+              col: aff.col,
+              special: affTile.special,
+              type: affTile.type
+            });
+          }
+        }
+      }
+    }
+
+    return Array.from(eliminatedMap.values());
+  }
+
+  // ----------------------------------------
+  // 视效触发器：激光、爆炸与震屏
+  // ----------------------------------------
+  showLaserH(row) {
+    const laser = document.createElement('div');
+    laser.className = 'fx-laser-h';
+    const sampleTile = document.getElementById(`tile-${row}-0`);
+    if (sampleTile) {
+      const rect = sampleTile.getBoundingClientRect();
+      const frameRect = this.dom.boardFrame.getBoundingClientRect();
+      laser.style.top = `${rect.top - frameRect.top + rect.height / 2}px`;
+    } else {
+      laser.style.top = `${((row + 0.5) / this.gridSize) * 100}%`;
+    }
+    this.dom.boardFrame.appendChild(laser);
+    setTimeout(() => laser.remove(), 420);
+  }
+
+  showLaserV(col) {
+    const laser = document.createElement('div');
+    laser.className = 'fx-laser-v';
+    const sampleTile = document.getElementById(`tile-0-${col}`);
+    if (sampleTile) {
+      const rect = sampleTile.getBoundingClientRect();
+      const frameRect = this.dom.boardFrame.getBoundingClientRect();
+      laser.style.left = `${rect.left - frameRect.left + rect.width / 2}px`;
+    } else {
+      laser.style.left = `${((col + 0.5) / this.gridSize) * 100}%`;
+    }
+    this.dom.boardFrame.appendChild(laser);
+    setTimeout(() => laser.remove(), 420);
+  }
+
+  showBombRipple(row, col, radius = 1) {
+    const ripple = document.createElement('div');
+    ripple.className = 'fx-bomb-ripple';
+    const sampleTile = document.getElementById(`tile-${row}-${col}`);
+    if (sampleTile) {
+      const rect = sampleTile.getBoundingClientRect();
+      const frameRect = this.dom.boardFrame.getBoundingClientRect();
+      ripple.style.left = `${rect.left - frameRect.left + rect.width / 2}px`;
+      ripple.style.top = `${rect.top - frameRect.top + rect.height / 2}px`;
+      const size = rect.width * (radius * 2 + 1.2);
+      ripple.style.width = `${size}px`;
+      ripple.style.height = `${size}px`;
+    }
+    this.dom.boardFrame.appendChild(ripple);
+    setTimeout(() => ripple.remove(), 480);
+  }
+
+  showScreenFlash() {
+    const flash = document.createElement('div');
+    flash.className = 'fx-screen-flash';
+    this.dom.boardFrame.appendChild(flash);
+    setTimeout(() => flash.remove(), 500);
+  }
+
+  shakeBoard() {
+    this.dom.boardFrame.classList.remove('shake');
+    void this.dom.boardFrame.offsetWidth;
+    this.dom.boardFrame.classList.add('shake');
+    setTimeout(() => this.dom.boardFrame.classList.remove('shake'), 400);
   }
 
   // ----------------------------------------
@@ -736,7 +1250,7 @@ class Match3Game {
   }
 
   handlePointerDown(e) {
-    if (this.isLocked) return;
+    if (this.isLocked || this.isGameOver) return;
     const tileData = this.getTileCoordinatesFromElement(e.target);
     if (!tileData) return;
 
@@ -750,11 +1264,11 @@ class Match3Game {
   }
 
   handlePointerMove(e) {
-    if (!this.pointerStart || this.isLocked || this.pointerStart.hasMoved) return;
+    if (!this.pointerStart || this.isLocked || this.isGameOver || this.pointerStart.hasMoved) return;
 
     const dx = e.clientX - this.pointerStart.x;
     const dy = e.clientY - this.pointerStart.y;
-    const threshold = 18; // 滑动判定阈值
+    const threshold = 18;
 
     if (Math.hypot(dx, dy) >= threshold) {
       this.pointerStart.hasMoved = true;
@@ -769,7 +1283,6 @@ class Match3Game {
         targetRow += dy > 0 ? 1 : -1;
       }
 
-      // 边界检查
       if (targetRow >= 0 && targetRow < this.gridSize && targetCol >= 0 && targetCol < this.gridSize) {
         this.clearSelection();
         this.attemptSwap(row, col, targetRow, targetCol);
@@ -780,8 +1293,7 @@ class Match3Game {
   handlePointerUp(e) {
     if (!this.pointerStart) return;
 
-    // 如果未触发滑动判定，则作为常规点击处理
-    if (!this.pointerStart.hasMoved && !this.isLocked) {
+    if (!this.pointerStart.hasMoved && !this.isLocked && !this.isGameOver) {
       const tileData = this.getTileCoordinatesFromElement(e.target);
       if (tileData) {
         this.handleTileClick(tileData.row, tileData.col);
@@ -791,32 +1303,29 @@ class Match3Game {
     this.pointerStart = null;
   }
 
-  // 点击选择与邻格交换处理
   handleTileClick(r, c) {
+    if (this.isGameOver) return;
+
     this.sound.playSelect();
     this.clearHints();
     this.resetIdleTimer();
 
-    // 尚未选中任何方块
     if (!this.selected) {
       this.selectTile(r, c);
       return;
     }
 
-    // 重复点击同一方块，取消选中
     if (this.selected.row === r && this.selected.col === c) {
       this.clearSelection();
       return;
     }
 
-    // 判断是否相邻 (曼哈顿距离为 1)
     const dist = Math.abs(this.selected.row - r) + Math.abs(this.selected.col - c);
     if (dist === 1) {
       const { row: prevR, col: prevC } = this.selected;
       this.clearSelection();
       this.attemptSwap(prevR, prevC, r, c);
     } else {
-      // 不相邻，改选新方块
       this.clearSelection();
       this.selectTile(r, c);
     }
@@ -837,9 +1346,16 @@ class Match3Game {
   }
 
   // ----------------------------------------
-  // 核心逻辑：尝试交换两方块并结算
+  // 核心逻辑：尝试交换方块 (包含首次启动倒计时与特效互换)
   // ----------------------------------------
   async attemptSwap(r1, c1, r2, c2) {
+    if (this.isGameOver) return;
+
+    // 玩家做出第一次移动，立即启动 15 秒生存倒计时！
+    if (!this.timerRunning) {
+      this.startTimer();
+    }
+
     this.isLocked = true;
     this.clearHints();
     this.clearIdleTimer();
@@ -847,7 +1363,6 @@ class Match3Game {
     const el1 = document.getElementById(`tile-${r1}-${c1}`);
     const el2 = document.getElementById(`tile-${r2}-${c2}`);
 
-    // 计算两者相对偏移坐标以执行丝滑 CSS 位移动画
     const rect1 = el1.getBoundingClientRect();
     const rect2 = el2.getBoundingClientRect();
     const dx = rect2.left - rect1.left;
@@ -855,7 +1370,7 @@ class Match3Game {
 
     this.sound.playSwap();
 
-    // 播放交换移动动画
+    // 播放滑动交换动画
     el1.style.transition = `transform ${CONFIG.swapDuration}ms cubic-bezier(0.25, 1, 0.5, 1)`;
     el2.style.transition = `transform ${CONFIG.swapDuration}ms cubic-bezier(0.25, 1, 0.5, 1)`;
     el1.style.transform = `translate(${dx}px, ${dy}px)`;
@@ -865,42 +1380,9 @@ class Match3Game {
 
     await this.wait(CONFIG.swapDuration);
 
-    // 数据交换
-    const item1 = this.board[r1][c1];
-    const item2 = this.board[r2][c2];
-    this.board[r1][c1] = item2;
-    this.board[r2][c2] = item1;
+    const tile1 = this.board[r1][c1];
+    const tile2 = this.board[r2][c2];
 
-    const initialMatches = this.findAllMatches();
-
-    if (initialMatches.length === 0) {
-      // 无法形成消除，弹回原位
-      this.sound.playInvalid();
-      el1.style.transform = 'translate(0, 0)';
-      el2.style.transform = 'translate(0, 0)';
-      await this.wait(CONFIG.swapDuration);
-
-      // 复原样式与数据
-      el1.style.transition = '';
-      el2.style.transition = '';
-      el1.style.transform = '';
-      el2.style.transform = '';
-      el1.style.zIndex = '';
-      el2.style.zIndex = '';
-
-      this.board[r1][c1] = item1;
-      this.board[r2][c2] = item2;
-
-      this.isLocked = false;
-      this.resetIdleTimer();
-      return;
-    }
-
-    // 形成有效消除：消耗 1 步
-    this.movesLeft--;
-    this.updateDashboard();
-
-    // 重置元素变换并重新渲染盘面准备消除
     el1.style.transition = '';
     el2.style.transition = '';
     el1.style.transform = '';
@@ -908,84 +1390,314 @@ class Match3Game {
     el1.style.zIndex = '';
     el2.style.zIndex = '';
 
+    // 判断是否为「特殊方块互换」或「同色方块互换」组合技
+    const isSpecialCombo = (tile1.special && tile2.special);
+    const isColorSwap = ((tile1.special === 'color' && !tile2.special) || (tile2.special === 'color' && !tile1.special));
+
+    if (isSpecialCombo || isColorSwap) {
+      // 特效交换 100% 成功
+      this.board[r1][c1] = tile2;
+      this.board[r2][c2] = tile1;
+      this.updateTileElement(r1, c1);
+      this.updateTileElement(r2, c2);
+
+      await this.executeSpecialCombo(r1, c1, r2, c2, tile1, tile2);
+
+      this.combo = 0;
+      await this.processCascadeLoop();
+
+      this.checkEndConditions();
+      this.isLocked = false;
+      this.resetIdleTimer();
+      return;
+    }
+
+    // 常规交换逻辑
+    this.board[r1][c1] = tile2;
+    this.board[r2][c2] = tile1;
+
+    const analysis = this.analyzeMatches({
+      source: { row: r1, col: c1 },
+      target: { row: r2, col: c2 }
+    });
+
+    if (!analysis.hasMatches) {
+      // 无法形成消除，弹回原位
+      this.sound.playInvalid();
+      el1.style.transition = `transform ${CONFIG.swapDuration}ms cubic-bezier(0.25, 1, 0.5, 1)`;
+      el2.style.transition = `transform ${CONFIG.swapDuration}ms cubic-bezier(0.25, 1, 0.5, 1)`;
+      el1.style.transform = `translate(${dx}px, ${dy}px)`;
+      el2.style.transform = `translate(${-dx}px, ${-dy}px)`;
+      await this.wait(CONFIG.swapDuration);
+
+      el1.style.transition = '';
+      el2.style.transition = '';
+      el1.style.transform = '';
+      el2.style.transform = '';
+
+      this.board[r1][c1] = tile1;
+      this.board[r2][c2] = tile2;
+
+      this.isLocked = false;
+      this.resetIdleTimer();
+      return;
+    }
+
     this.updateTileElement(r1, c1);
     this.updateTileElement(r2, c2);
 
-    // 进入连锁消除循环
     this.combo = 0;
+    await this.processMatchStep(analysis);
+
     await this.processCascadeLoop();
 
-    // 关卡胜负判定
-    if (this.currentScore >= this.targetScore) {
-      this.handleGameWin();
-      return;
-    }
-
-    if (this.movesLeft <= 0) {
-      this.handleGameLose();
-      return;
-    }
-
-    // 检查死锁：若无路可走则自动洗牌
-    if (!this.findPossibleMove()) {
-      await this.shuffleBoardWithAnimation(false, '无路可走，已为你施展魔法重新洗牌 ✨');
-    }
-
+    this.checkEndConditions();
     this.isLocked = false;
     this.resetIdleTimer();
   }
 
   // ----------------------------------------
-  // 级联消除与连锁反应循环 (Cascade Loop)
+  // 执行特效组合技能 (Special Combos)
   // ----------------------------------------
-  async processCascadeLoop() {
-    let matches = this.findAllMatches();
+  async executeSpecialCombo(r1, c1, r2, c2, t1, t2) {
+    const N = this.gridSize;
+    const cr = r2, cc = c2;
+    const eliminated = [];
 
-    while (matches.length > 0) {
-      this.combo++;
-      const matchCount = matches.length;
+    // 1. 同色 + 同色 (Color + Color) ➔ 终极大招：全屏大清场！
+    if (t1.special === 'color' && t2.special === 'color') {
+      this.showToast('🌈 终极大招：全屏大清场！');
+      this.showScreenFlash();
+      this.sound.playSuperCombo();
+      this.shakeBoard();
 
-      // 计分计算：包含基础分、多消奖励与连击加成
-      const bonus = (matchCount > 3) ? (matchCount - 3) * CONFIG.bonus4 : 0;
-      const basePoints = matchCount * CONFIG.scorePerTile + bonus;
-      const multiplier = 1 + (this.combo - 1) * CONFIG.comboMultiplierStep;
-      const earnedScore = Math.round(basePoints * multiplier);
-
-      this.currentScore += earnedScore;
-      this.updateDashboard();
-      this.popScoreAnimation();
-
-      // 音效播放
-      this.sound.playMatch(this.combo);
-
-      // 显示连击提示横幅
-      if (this.combo >= 2) {
-        this.showComboBanner(this.combo);
-      }
-
-      // 为消除的方块添加爆炸动效、飘字与粒子
-      for (const m of matches) {
-        const el = document.getElementById(`tile-${m.row}-${m.col}`);
-        if (el) {
-          el.classList.add('matched');
-          const rect = el.getBoundingClientRect();
-          this.particles.spawnBurst(rect.left + rect.width / 2, rect.top + rect.height / 2, 8);
+      for (let r = 0; r < N; r++) {
+        for (let c = 0; c < N; c++) {
+          eliminated.push({ row: r, col: c });
         }
       }
+      this.currentScore += 3000;
+      this.updateDashboard();
+      this.showComboBanner(5);
+    }
+    // 2. 同色 + 特效 (Color + Line/Bomb/Cross) ➔ 全图该颜色全变身并引爆！
+    else if (t1.special === 'color' || t2.special === 'color') {
+      const otherTile = (t1.special === 'color') ? t2 : t1;
 
-      // 在其中一个消除方块处弹出得分小标签
-      if (matches.length > 0) {
-        const centerTile = matches[Math.floor(matches.length / 2)];
-        this.spawnScorePopup(centerTile.row, centerTile.col, earnedScore, this.combo);
+      if (otherTile.special) {
+        const targetType = otherTile.type;
+        const specType = otherTile.special;
+        this.showToast('✨ 极光全图扩散：全场变身并引爆！');
+        this.sound.playSuperCombo();
+        this.shakeBoard();
+
+        const convertedSpecials = [];
+        for (let r = 0; r < N; r++) {
+          for (let c = 0; c < N; c++) {
+            if (this.board[r][c] && this.board[r][c].type === targetType) {
+              this.board[r][c].special = specType;
+              this.applyTileVisuals(document.getElementById(`tile-${r}-${c}`), this.board[r][c]);
+              convertedSpecials.push({ row: r, col: c, special: specType, type: targetType });
+            }
+          }
+        }
+        await this.wait(260);
+
+        const allCells = this.expandSpecialDetonations([], convertedSpecials);
+        eliminated.push(...allCells);
+        this.currentScore += 1800;
+        this.showComboBanner(4);
+      } else {
+        const targetType = otherTile.type;
+        this.showToast('🌈 彩虹同色大消除！');
+        this.showScreenFlash();
+        this.sound.playColorBomb();
+
+        for (let r = 0; r < N; r++) {
+          for (let c = 0; c < N; c++) {
+            if (this.board[r][c] && this.board[r][c].type === targetType) {
+              eliminated.push({ row: r, col: c });
+            }
+          }
+        }
+        eliminated.push({ row: r1, col: c1 }, { row: r2, col: c2 });
+        this.currentScore += 800;
+        this.showComboBanner(3);
       }
+    }
+    // 3. 炸弹 + 炸弹 (Bomb + Bomb) ➔ 5×5 巨型大核爆！
+    else if (t1.special === 'bomb' && t2.special === 'bomb') {
+      this.showToast('💥 5×5 巨型超级大核爆！');
+      this.showBombRipple(cr, cc, 2);
+      this.sound.playExplosion();
+      this.shakeBoard();
 
-      await this.wait(CONFIG.matchDuration);
+      for (let r = Math.max(0, cr - 2); r <= Math.min(N - 1, cr + 2); r++) {
+        for (let c = Math.max(0, cc - 2); c <= Math.min(N - 1, cc + 2); c++) {
+          eliminated.push({ row: r, col: c });
+        }
+      }
+      this.currentScore += 1000;
+      this.showComboBanner(3);
+    }
+    // 4. 直线 + 炸弹 (Line + Bomb) ➔ 3行 + 3列 超级十字光束全屏扫射！
+    else if ((t1.special.includes('line') && t2.special === 'bomb') ||
+             (t2.special.includes('line') && t1.special === 'bomb')) {
+      this.showToast('🌟 3×3 超级十字激光全屏扫射！');
+      this.sound.playLaser();
+      this.sound.playExplosion();
+      this.shakeBoard();
 
-      // 掉落补位算法处理
-      await this.dropAndRefill(matches);
+      for (let offset = -1; offset <= 1; offset++) {
+        const rr = cr + offset;
+        const ccCol = cc + offset;
+        if (rr >= 0 && rr < N) {
+          this.showLaserH(rr);
+          for (let c = 0; c < N; c++) eliminated.push({ row: rr, col: c });
+        }
+        if (ccCol >= 0 && ccCol < N) {
+          this.showLaserV(ccCol);
+          for (let r = 0; r < N; r++) eliminated.push({ row: r, col: ccCol });
+        }
+      }
+      this.currentScore += 1200;
+      this.showComboBanner(4);
+    }
+    // 5. 直线 + 直线 ➔ 十字激光清除整行 + 整列！
+    else if (t1.special.includes('line') && t2.special.includes('line')) {
+      this.showToast('⚡ 超级十字激光！');
+      this.showLaserH(cr);
+      this.showLaserV(cc);
+      this.sound.playLaser();
+      this.shakeBoard();
 
-      // 再次检查是否由掉落触发了新一轮消除
-      matches = this.findAllMatches();
+      for (let c = 0; c < N; c++) eliminated.push({ row: cr, col: c });
+      for (let r = 0; r < N; r++) eliminated.push({ row: r, col: cc });
+      this.currentScore += 600;
+      this.showComboBanner(2);
+    }
+    // 6. 其他特殊互换
+    else {
+      this.showToast('✨ 超能特效大爆发！');
+      this.sound.playSuperCombo();
+      this.shakeBoard();
+
+      const allCells = this.expandSpecialDetonations([], [
+        { row: r1, col: c1, special: t1.special, type: t1.type },
+        { row: r2, col: c2, special: t2.special, type: t2.type }
+      ]);
+      eliminated.push(...allCells);
+      this.currentScore += 800;
+      this.showComboBanner(3);
+    }
+
+    const unique = [];
+    const seen = new Set();
+    for (const cell of eliminated) {
+      const key = `${cell.row},${cell.col}`;
+      if (!seen.has(key) && cell.row >= 0 && cell.row < N && cell.col >= 0 && cell.col < N) {
+        seen.add(key);
+        unique.push(cell);
+      }
+    }
+
+    // 特效组合直接互换：基础 2.0 秒，多出方块边际递减，单次消除严格封顶不超过 4.0 秒！
+    const extraComboTiles = Math.max(0, unique.length - 3);
+    const rawComboTime = 2.0 + extraComboTiles * CONFIG.extraTileTime;
+    const timeEarned = Math.min(CONFIG.maxStepTimeBonus, parseFloat(rawComboTime.toFixed(2)));
+    this.addTime(timeEarned);
+    this.totalClearedTiles += unique.length;
+
+    await this.animateAndRemoveCells(unique);
+  }
+
+  // ----------------------------------------
+  // 单步消除与生成特殊方块 (根据消除数量增加时间)
+  // ----------------------------------------
+  async processMatchStep(analysis) {
+    this.combo++;
+    this.maxCombo = Math.max(this.maxCombo, this.combo);
+
+    const { eliminatedCells, specialsToCreate } = analysis;
+    const fullElimination = this.expandSpecialDetonations(eliminatedCells);
+
+    const count = fullElimination.length;
+    this.totalClearedTiles += count;
+
+    // 核心加时逻辑 (方案 A 优化版)：
+    // 1. 普通 3 消精确增加 1.0 秒
+    // 2. 超出 3 块的部分按平滑边际递减增长，每次连锁连击小额奖励 0.2 秒
+    // 3. 严格封顶：单次单步消除增加的时间最多绝不超过 4.0 秒！
+    const extraTiles = Math.max(0, count - 3);
+    const tileBonus = extraTiles * CONFIG.extraTileTime;
+    const comboBonus = (this.combo > 1) ? (this.combo - 1) * CONFIG.comboTimeBonus : 0;
+    const rawTime = CONFIG.baseMatch3Time + tileBonus + comboBonus;
+    const timeEarned = Math.min(CONFIG.maxStepTimeBonus, parseFloat(rawTime.toFixed(2)));
+    this.addTime(timeEarned);
+
+    // 计分计算：基础分 + 多消奖励 + 连击倍率
+    const bonus = (count > 3) ? (count - 3) * CONFIG.bonus4 : 0;
+    const basePoints = count * CONFIG.scorePerTile + bonus;
+    const multiplier = 1 + (this.combo - 1) * CONFIG.comboMultiplierStep;
+    const earnedScore = Math.round(basePoints * multiplier);
+
+    this.currentScore += earnedScore;
+    this.updateDashboard();
+    this.popScoreAnimation();
+
+    this.sound.playMatch(this.combo);
+    if (this.combo >= 2) {
+      this.showComboBanner(this.combo);
+    }
+
+    // 生成新特效方块
+    for (const spec of specialsToCreate) {
+      const { row, col } = spec.pos;
+      if (this.board[row] && this.board[row][col]) {
+        this.board[row][col].special = spec.type;
+        this.board[row][col].type = spec.gemType;
+        this.updateTileElement(row, col);
+
+        const el = document.getElementById(`tile-${row}-${col}`);
+        if (el) {
+          const rect = el.getBoundingClientRect();
+          this.particles.spawnBurst(rect.left + rect.width / 2, rect.top + rect.height / 2, 16);
+        }
+      }
+    }
+
+    if (fullElimination.length > 0) {
+      const center = fullElimination[Math.floor(fullElimination.length / 2)];
+      this.spawnScorePopup(center.row, center.col, earnedScore, this.combo);
+    }
+
+    await this.animateAndRemoveCells(fullElimination);
+  }
+
+  // 消除动画并下落
+  async animateAndRemoveCells(cells) {
+    for (const m of cells) {
+      const el = document.getElementById(`tile-${m.row}-${m.col}`);
+      if (el) {
+        el.classList.add('matched');
+        const rect = el.getBoundingClientRect();
+        this.particles.spawnBurst(rect.left + rect.width / 2, rect.top + rect.height / 2, 6);
+      }
+    }
+
+    await this.wait(CONFIG.matchDuration);
+    await this.dropAndRefill(cells);
+  }
+
+  // ----------------------------------------
+  // 级联掉落与连续连锁循环 (Cascade Loop)
+  // ----------------------------------------
+  async processCascadeLoop() {
+    let analysis = this.analyzeMatches();
+
+    while (analysis.hasMatches) {
+      await this.processMatchStep(analysis);
+      analysis = this.analyzeMatches();
     }
   }
 
@@ -994,15 +1706,13 @@ class Match3Game {
   // ----------------------------------------
   async dropAndRefill(matches) {
     const N = this.gridSize;
-    // 将已消除位置置为 null
+
     for (const m of matches) {
       this.board[m.row][m.col] = null;
     }
 
-    // 记录发生掉落或新生成方块的坐标，用于针对性播放下落微弹动画
     const movedTiles = new Set();
 
-    // 按列自底向上让已有方块下落
     for (let c = 0; c < N; c++) {
       let writeRow = N - 1;
       for (let r = N - 1; r >= 0; r--) {
@@ -1016,31 +1726,28 @@ class Match3Game {
         }
       }
 
-      // 顶部空缺生成新随机方块
       while (writeRow >= 0) {
         this.board[writeRow][c] = {
           id: `${writeRow}-${c}-${Date.now()}-${Math.random()}`,
-          type: Math.floor(Math.random() * 4)
+          type: Math.floor(Math.random() * 4),
+          special: null
         };
         movedTiles.add(`${writeRow},${c}`);
         writeRow--;
       }
     }
 
-    // 重新渲染掉落后的方块并附加掉落动效
     for (let r = 0; r < N; r++) {
       for (let c = 0; c < N; c++) {
         const el = document.getElementById(`tile-${r}-${c}`);
         const item = this.board[r][c];
         if (el && item) {
           el.classList.remove('matched');
-          const img = el.querySelector('img');
-          if (img) img.src = CONFIG.tileImages[item.type];
+          this.applyTileVisuals(el, item);
 
-          // 仅对发生移动或新生成的方块赋予入场跳跃动效
           if (movedTiles.has(`${r},${c}`)) {
             el.classList.remove('dropped');
-            void el.offsetWidth; // 触发回流重置动效
+            void el.offsetWidth;
             el.classList.add('dropped');
           }
         }
@@ -1048,16 +1755,6 @@ class Match3Game {
     }
 
     await this.wait(CONFIG.dropDuration);
-  }
-
-  // 更新单个方块 DOM 内容
-  updateTileElement(r, c) {
-    const el = document.getElementById(`tile-${r}-${c}`);
-    const item = this.board[r][c];
-    if (el && item) {
-      const img = el.querySelector('img');
-      if (img) img.src = CONFIG.tileImages[item.type];
-    }
   }
 
   // ----------------------------------------
@@ -1076,7 +1773,7 @@ class Match3Game {
       '',
       '✨ 治愈双重奏！',
       '🌟 超级大连击！',
-      '💖 治愈力爆棚！',
+      '💖 极速狂飙！',
       '🌈 奇迹漫天飞舞！'
     ];
     const text = titles[Math.min(combo, titles.length - 1)] || `🔥 Combo × ${combo}！`;
@@ -1110,7 +1807,7 @@ class Match3Game {
   // 洗牌算法 (带优雅遮罩与风铃动画)
   // ----------------------------------------
   async shuffleBoardWithAnimation(isManual = false, customMsg = null) {
-    if (this.isLocked) return;
+    if (this.isLocked || this.isGameOver) return;
     this.isLocked = true;
     this.clearHints();
     this.clearSelection();
@@ -1121,11 +1818,13 @@ class Match3Game {
 
     await this.wait(400);
 
-    // 收集所有方块类型并打乱
-    let types = [];
+    const items = [];
     for (let r = 0; r < this.gridSize; r++) {
       for (let c = 0; c < this.gridSize; c++) {
-        types.push(this.board[r][c].type);
+        items.push({
+          type: this.board[r][c].type,
+          special: this.board[r][c].special
+        });
       }
     }
 
@@ -1133,27 +1832,26 @@ class Match3Game {
     let attempts = 0;
 
     while (!valid && attempts < 100) {
-      // Fisher-Yates 洗牌
-      for (let i = types.length - 1; i > 0; i--) {
+      for (let i = items.length - 1; i > 0; i--) {
         const j = Math.floor(Math.random() * (i + 1));
-        [types[i], types[j]] = [types[j], types[i]];
+        [items[i], items[j]] = [items[j], items[i]];
       }
 
       let idx = 0;
       for (let r = 0; r < this.gridSize; r++) {
         for (let c = 0; c < this.gridSize; c++) {
-          this.board[r][c].type = types[idx++];
+          this.board[r][c].type = items[idx].type;
+          this.board[r][c].special = items[idx].special;
+          idx++;
         }
       }
 
-      // 洗牌后确保无直接三消且至少有一步可移动
-      if (this.findAllMatches().length === 0 && this.findPossibleMove()) {
+      if (!this.analyzeMatches().hasMatches && this.findPossibleMove()) {
         valid = true;
       }
       attempts++;
     }
 
-    // 若无法通过重排得到合法棋盘，直接重新生成一份全新棋盘
     if (!valid) {
       this.generateValidBoard();
     }
@@ -1171,10 +1869,10 @@ class Match3Game {
   }
 
   // ----------------------------------------
-  // 智能提示系统 (发呆自动提示 + 手动求助)
+  // 智能提示系统
   // ----------------------------------------
   showManualHint() {
-    if (this.isLocked) return;
+    if (this.isLocked || this.isGameOver) return;
     this.clearHints();
     const move = this.findPossibleMove();
     if (move) {
@@ -1208,7 +1906,7 @@ class Match3Game {
   resetIdleTimer() {
     this.clearIdleTimer();
     this.idleTimer = setTimeout(() => {
-      if (!this.isLocked && !this.selected) {
+      if (!this.isLocked && !this.selected && !this.isGameOver) {
         const move = this.findPossibleMove();
         if (move) this.highlightHints(move);
       }
@@ -1223,41 +1921,49 @@ class Match3Game {
   }
 
   // ----------------------------------------
-  // 结算与弹窗管理 (Win / Lose / Modal)
+  // 结算与死锁检测
   // ----------------------------------------
-  handleGameWin() {
-    this.clearIdleTimer();
-    this.sound.playVictory();
-
-    // 计算星级评级
-    let stars = '⭐⭐⭐';
-    if (this.movesLeft < 5) stars = '⭐⭐';
-    if (this.movesLeft === 0) stars = '⭐';
-
-    this.dom.winFinalScore.textContent = this.currentScore;
-    this.dom.winRemainingMoves.textContent = this.movesLeft;
-    this.dom.winStars.textContent = stars;
-
-    // 粒子喷射庆祝
-    const cx = window.innerWidth / 2;
-    const cy = window.innerHeight / 2;
-    for (let i = 0; i < 4; i++) {
-      setTimeout(() => {
-        this.particles.spawnBurst(cx + (Math.random() - 0.5) * 200, cy + (Math.random() - 0.5) * 200, 24);
-      }, i * 200);
+  checkEndConditions() {
+    if (this.timeLeft <= 0) {
+      this.handleGameOver();
+      return true;
     }
 
-    setTimeout(() => this.openModal(this.dom.modalWin), 500);
+    if (!this.findPossibleMove()) {
+      this.shuffleBoardWithAnimation(false, '无路可走，已为你施展魔法重新洗牌 ✨');
+    }
+
+    return false;
   }
 
-  handleGameLose() {
+  // 倒计时结束，游戏立即结算
+  handleGameOver() {
+    if (this.isGameOver) return;
+    this.isGameOver = true;
+    this.stopTimer();
     this.clearIdleTimer();
+    this.clearSelection();
+    this.isLocked = true;
+
     this.sound.playGameOver();
 
-    this.dom.loseFinalScore.textContent = this.currentScore;
-    this.dom.loseGapScore.textContent = Math.max(0, this.targetScore - this.currentScore);
+    // 计算玩家荣誉称号
+    let rank = '🌟 消除新秀';
+    if (this.currentScore >= 5000) {
+      rank = '⚡ 极光神级传说 (顶级手速)';
+    } else if (this.currentScore >= 3000) {
+      rank = '👑 治愈手速大师';
+    } else if (this.currentScore >= 1500) {
+      rank = '🏆 敏捷挑战者';
+    }
 
-    setTimeout(() => this.openModal(this.dom.modalLose), 500);
+    this.dom.gameoverFinalScore.textContent = this.currentScore;
+    this.dom.gameoverSurviveTime.textContent = `${this.totalSurvivedTime.toFixed(1)} 秒`;
+    this.dom.gameoverMaxCombo.textContent = `x${this.maxCombo}`;
+    this.dom.gameoverTotalCleared.textContent = `${this.totalClearedTiles} 个`;
+    this.dom.gameoverRank.textContent = rank;
+
+    setTimeout(() => this.openModal(this.dom.modalGameOver), 400);
   }
 
   openModal(modalEl) {
